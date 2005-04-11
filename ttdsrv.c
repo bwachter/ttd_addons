@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <time.h>
+#include <dirent.h>
 
 #ifdef __dietlibc__
 #include <write12.h>
@@ -37,6 +38,45 @@ int tf(char *name){
   if ((fd=open(name, O_RDONLY))==-1) return errno;
   close(fd);
   return 0;
+}
+
+int get_autosave(){
+  //return 0 for normal startup, 1 for autosave
+  DIR* dir_ptr;
+  struct dirent *temp;
+  time_t tmptime=0;
+  struct stat filestat;
+  char* filename;
+
+  if (chdir("/save/autosave")==-1){
+    perror("Unable to chdir to autosaves");
+    return 0;
+  }
+
+  if ((dir_ptr=opendir("."))==NULL){
+    perror("Unable to open dir");
+    chdir("/");
+    return 0; //shit happens. neither cookie nor autosave...
+  }
+
+  for (temp=readdir(dir_ptr); temp!=NULL; temp=readdir(dir_ptr)){
+    //filename=temp->d_name;
+    __write1(temp->d_name); __write1("\n");
+    if (strncmp(temp->d_name+strlen(temp->d_name)-4, ".sav", 4)) continue;
+    if (!strcmp(temp->d_name, ".")) continue;
+    if (!strcmp(temp->d_name, "..")) continue;
+    __write1(temp->d_name); __write1("\n");
+    stat(temp->d_name, &filestat);
+    if (filestat.st_mtime > tmptime) {
+      unlink("/startup.sav");
+      if (link(temp->d_name, "/startup.sav")==0)
+        tmptime=filestat.st_mtime;
+    }
+    // what we want is in temp->d_name. stat and compare this...
+  }
+  chdir("/");
+  if (tmptime > 0) return 1;
+  else return 0;
 }
 
 pid_t pid;
@@ -91,6 +131,8 @@ int main(int argc, char **argv){
       return -1;
     }
 
+    if (!tf("startup.sav")) unlink("startup.sav");
+
     if (!tf(log)) {
       snprintf(buf, 512, "%s.%i", log, t);
       if (link(log, buf)==-1){
@@ -134,7 +176,10 @@ int main(int argc, char **argv){
       close(0);
       i=dup(fd[0]);
       close(fd[0]);
-      execlp("/openttd", "openttd", "-D", 0);
+      if (get_autosave())
+	execlp("/openttd", "openttd", "-D", "-g", "startup.sav", 0);
+      else
+        execlp("/openttd", "openttd", "-D", 0);
       //execlp is not supposed to return...
       perror("execlp() failed");
     } else {
