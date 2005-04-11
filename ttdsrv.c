@@ -11,8 +11,14 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <signal.h>
-#include <write12.h>
 #include <time.h>
+
+#ifdef __dietlibc__
+#include <write12.h>
+#else
+static inline int __write1(const char*s) { return write(1,s,strlen(s)); }
+static inline int __write2(const char*s) { return write(2,s,strlen(s)); }
+#endif
 
 int mf(char* name){
   struct stat fifostat;
@@ -151,7 +157,7 @@ int main(int argc, char **argv){
       }
     }
   } else {
-    __write1("Usage: ttdsrv uid openttd-directory log errlog\n");
+    __write1("Usage: ttdsrv uid gid openttd-directory log errlog\n");
     return -1;
   }
   return 0;

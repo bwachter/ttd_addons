@@ -11,10 +11,21 @@
 #include <string.h>
 #include <fcntl.h>
 #include <stdio.h>
-#include <write12.h>
 #include <sys/poll.h>
 #include <sys/stat.h>
 #include <time.h>
+
+#ifdef __dietlibc__
+#include <write12.h>
+#else
+static inline int __write1(const char*s) { return write(1,s,strlen(s)); }
+static inline int __write2(const char*s) { return write(2,s,strlen(s)); }
+#endif
+
+#ifndef POLLRDNORM
+#warning Your system stinks.
+#define POLLRDNORM 0x0040
+#endif
 
 int main(int argc, char **argv){
   int fd_fifo, fd_log, i;
