@@ -10,6 +10,9 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <signal.h>
+#include <write12.h>
+#include <time.h>
 
 int mf(char* name){
   struct stat fifostat;
@@ -30,11 +33,27 @@ int tf(char *name){
   return 0;
 }
 
+pid_t pid;
+
+int sighandle_child(){
+  int status;
+  if (wait(&status)==pid){
+    __write2("Our child exited\n");
+    exit(-1);
+  }
+  return 0;
+}
+
+int sighandle_term(){
+  __write2("Cought SIGTERM, try to terminate our child\n");
+  kill(pid, SIGTERM);
+  return 0;
+}
+
 int main(int argc, char **argv){
   int fd1, fd2, fdc, i, fd[2];
   char buf[1024];
-  pid_t pid;
-
+  time_t t=time(NULL);
   int uid, gid;
   char *wkd, *log, *errlog;
 
@@ -66,6 +85,24 @@ int main(int argc, char **argv){
       return -1;
     }
 
+    if (!tf(log)) {
+      snprintf(buf, 512, "%s.%i", log, t);
+      if (link(log, buf)==-1){
+	perror("Unable to move logfile");
+	return -1;
+      }
+      unlink(log);
+    }
+
+    if (!tf(errlog)) {
+      snprintf(buf, 512, "%s.%i", errlog, t);
+      if (link(errlog, buf)==-1){
+	perror("Unable to move errlogfile");
+	return -1;
+      }
+      unlink(log);
+    }
+
     if (pipe(fd)==-1) {
       perror("Unable to create pipe");
       return -1;
@@ -79,9 +116,9 @@ int main(int argc, char **argv){
 
     if (pid==0) {
       close(1);
-      fd1=open(log, O_RDWR|O_CREAT, 0644);
+      fd1=open(log, O_RDWR|O_CREAT|O_TRUNC, 0644);
       close(2);
-      fd2=open(errlog, O_RDWR|O_CREAT, 0644);
+      fd2=open(errlog, O_RDWR|O_CREAT|O_TRUNC, 0644);
       if (fd1==-1 || fd2==-1){
 	perror("Unable to redirect to logfile");
 	return -1;
@@ -98,6 +135,7 @@ int main(int argc, char **argv){
       close(fd[0]); // we don't need read
       close(1);
       i=dup(fd[1]);
+
       close(fd[1]);
       fdc=open(".ctrl", O_RDWR);
       if (fdc==-1){
@@ -105,6 +143,8 @@ int main(int argc, char **argv){
 	return -1;
       }
       for (;;){
+        signal(SIGCHLD, sighandle_child);
+	signal(SIGTERM, sighandle_term);
 	i=read(fdc, buf, 1024);
 	buf[i]='\0';
 	__write1(buf);
