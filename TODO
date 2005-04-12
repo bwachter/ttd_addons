@@ -1,4 +1,1 @@
-- add scanning for latest autosave / autoloading of latest autosave
-- add full io to console
-- add child monitoring to ttdsrv
 - add 2nd child for greetings, ... to ttdsrv
