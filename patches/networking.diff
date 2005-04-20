@@ -1,0 +1,125 @@
+Index: network.c
+===================================================================
+--- network.c	(revision 2214)
++++ network.c	(working copy)
+@@ -402,11 +402,8 @@
+ {
+ 	in_addr_t ip;
+ 
+-	// First try: is it an ip address?
+-	ip = inet_addr(hostname);
+-
+-	// If not try to resolve the name
+-	if (ip == INADDR_NONE) {
++	// check if the hostname is an ip, if not resolve it
++	if (inet_aton(hostname, &ip) == 0) {
+ 		struct hostent *he = gethostbyname(hostname);
+ 		if (he == NULL) {
+ 			DEBUG(net, 0) ("[NET] Cannot resolve %s", hostname);
+@@ -415,7 +412,8 @@
+ 			DEBUG(net, 1) ("[NET] Resolved %s to %s", hostname, inet_ntoa(addr));
+ 			ip = addr.s_addr;
+ 		}
+-	}
++	} else
++	  DEBUG(net,0)("[NET] Got a valid IP", hostname);
+ 	return ip;
+ }
+ 
+@@ -571,41 +569,61 @@
+ // A client wants to connect to a server
+ static bool NetworkConnect(const char *hostname, int port)
+ {
+-	SOCKET s;
+-	struct sockaddr_in sin;
++  SOCKET s;
++	struct addrinfo hints;
++	struct addrinfo *res;
++	int err;
+ 
++	// used for debug-output
++	char host[NI_MAXHOST];
++	char serv[NI_MAXSERV];
++
+ 	DEBUG(net, 1) ("[NET] Connecting to %s %d", hostname, port);
++	char port_s[6];
++	sprintf(port_s, "%d", port); // just an ugly cludge till port is char*
+ 
+-	s = socket(AF_INET, SOCK_STREAM, 0);
+-	if (s == INVALID_SOCKET) {
+-		ClientStartError("socket() failed");
+-		return false;
+-	}
++	bzero(&hints, sizeof(hints));
++	hints.ai_family = AF_INET;
++	hints.ai_socktype = SOCK_STREAM;
+ 
+-	if (!SetNoDelay(s))
+-		DEBUG(net, 1)("[NET] Setting TCP_NODELAY failed");
++	err=getaddrinfo(hostname, port_s, &hints, &res);
++	if (err) {
++		DEBUG(net, 1) ("[NET] getaddrinfo failed: %s", gai_strerror(err));
++	} else {
++		while (res) {
++			getnameinfo(res->ai_addr, res->ai_addrlen, host, sizeof(host), serv, sizeof(serv),
++									NI_NUMERICHOST | NI_NUMERICSERV); 
++			DEBUG(net, 0)("[NET] Trying to connect to %s port %s", host, serv);
++			// at first set up a socket that fits to the ip (PF_INET or PF_INET6)
++			s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
++			if (s == INVALID_SOCKET) {
++				ClientStartError("socket() failed");
++				return false;
++			}
+ 
+-	sin.sin_family = AF_INET;
+-	sin.sin_addr.s_addr = NetworkResolveHost(hostname);
+-	sin.sin_port = htons(port);
+-	_network_last_host_ip = sin.sin_addr.s_addr;
++			if (!SetNoDelay(s))
++				DEBUG(net, 1) ("[NET] Setting TCP_NODELAY failed");
+ 
+-	if (connect(s, (struct sockaddr*) &sin, sizeof(sin)) != 0) {
+-		// We failed to connect for which reason what so ever
+-		return false;
++			if (!connect(s, res->ai_addr, res->ai_addrlen)) {
++				// we managed to establish a connection
++				if (!SetNonBlocking(s))
++					DEBUG(net, 0)("[NET] Setting non-blocking failed"); // XXX should this be an error?
++				// in client mode, only the first client field is used. it's pointing to the server.
++				NetworkAllocClient(s);
++				ShowJoinStatusWindow();
++				// no clue why this is here -- was in the old code ;) -- Aard
++				memcpy(&network_tmp_patches, &_patches, sizeof(_patches));
++				return true;
++			} else {
++				// we were unable to connect, so give a short error and try the next one
++				DEBUG(net, 0)("[NET] Unable to connect to %s port %s, trying next if possible", host, serv);
++				res=res->ai_next;
++			}
++		}
+ 	}
+ 
+-	if (!SetNonBlocking(s))
+-		DEBUG(net, 0)("[NET] Setting non-blocking failed"); // XXX should this be an error?
+-
+-	// in client mode, only the first client field is used. it's pointing to the server.
+-	NetworkAllocClient(s);
+-
+-	ShowJoinStatusWindow();
+-
+-	memcpy(&network_tmp_patches, &_patches, sizeof(_patches));
+-
+-	return true;
++	// if we got that far we've been unable to establish a connection, so return false
++	return false;
+ }
+ 
+ // For the server, to accept new clients
+@@ -1309,6 +1327,7 @@
+ 	_network_last_advertise_date = 0;
+ 	_network_advertise_retries = 0;
+ 
++	// FIXME: support loading more than one ip, remove v4-only inet_addr/inet_ntoa
+ 	/* Load the ip from the openttd.cfg */
+ 	_network_server_bind_ip = inet_addr(_network_server_bind_ip_host);
+ 	/* And put the data back in it in case it was an invalid ip */
