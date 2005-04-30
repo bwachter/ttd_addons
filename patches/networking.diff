@@ -1,14 +1,26 @@
+Index: functions.h
+===================================================================
+--- functions.h	(revision 2235)
++++ functions.h	(working copy)
+@@ -145,7 +145,7 @@
+ void NetworkGameLoop(void);
+ void NetworkUDPGameLoop(void);
+ bool NetworkServerStart(void);
+-bool NetworkClientConnectGame(const char* host, unsigned short port);
++bool NetworkClientConnectGame(const char* host, const char* service);
+ void NetworkReboot(void);
+ void NetworkDisconnect(void);
+ void NetworkSend_Command(uint32 tile, uint32 p1, uint32 p2, uint32 cmd, CommandCallback *callback);
 Index: network.c
 ===================================================================
---- network.c	(revision 2215)
+--- network.c	(revision 2235)
 +++ network.c	(working copy)
-@@ -415,10 +415,35 @@
+@@ -415,10 +415,34 @@
  			DEBUG(net, 1) ("[NET] Resolved %s to %s", hostname, inet_ntoa(addr));
  			ip = addr.s_addr;
  		}
 -	}
-+	} else
-+	  DEBUG(net,0)("[NET] Got a valid IP", hostname);
++	} 
  	return ip;
  }
  
@@ -39,9 +51,12 @@ Index: network.c
  // Converts a string to ip/port/player
  //  Format: IP#player:port
  //
-@@ -571,41 +596,61 @@
+@@ -569,43 +593,61 @@
+ }
+ 
  // A client wants to connect to a server
- static bool NetworkConnect(const char *hostname, int port)
+-static bool NetworkConnect(const char *hostname, int port)
++static bool NetworkConnect(const char *hostname, const char *service)
  {
 -	SOCKET s;
 -	struct sockaddr_in sin;
@@ -50,26 +65,29 @@ Index: network.c
 +	struct addrinfo *res;
 +	int err;
  
+-	DEBUG(net, 1) ("[NET] Connecting to %s %d", hostname, port);
 +	// used for debug-output
 +	char host[NI_MAXHOST];
 +	char serv[NI_MAXSERV];
-+
- 	DEBUG(net, 1) ("[NET] Connecting to %s %d", hostname, port);
-+	char port_s[6];
-+	sprintf(port_s, "%d", port); // just an ugly cludge till port is char*
  
 -	s = socket(AF_INET, SOCK_STREAM, 0);
 -	if (s == INVALID_SOCKET) {
 -		ClientStartError("socket() failed");
 -		return false;
 -	}
++	DEBUG(net, 1) ("[NET] Connecting to %s %s", hostname, service);
+ 
+-	if (!SetNoDelay(s))
+-		DEBUG(net, 1)("[NET] Setting TCP_NODELAY failed");
 +	bzero(&hints, sizeof(hints));
 +	hints.ai_family = AF_INET;
 +	hints.ai_socktype = SOCK_STREAM;
  
--	if (!SetNoDelay(s))
--		DEBUG(net, 1)("[NET] Setting TCP_NODELAY failed");
-+	err=getaddrinfo(hostname, port_s, &hints, &res);
+-	sin.sin_family = AF_INET;
+-	sin.sin_addr.s_addr = NetworkResolveHost(hostname);
+-	sin.sin_port = htons(port);
+-	_network_last_host_ip = sin.sin_addr.s_addr;
++	err=getaddrinfo(hostname, service, &hints, &res);
 +	if (err) {
 +		DEBUG(net, 1) ("[NET] getaddrinfo failed: %s", gai_strerror(err));
 +	} else {
@@ -84,16 +102,12 @@ Index: network.c
 +				return false;
 +			}
  
--	sin.sin_family = AF_INET;
--	sin.sin_addr.s_addr = NetworkResolveHost(hostname);
--	sin.sin_port = htons(port);
--	_network_last_host_ip = sin.sin_addr.s_addr;
-+			if (!SetNoDelay(s))
-+				DEBUG(net, 1) ("[NET] Setting TCP_NODELAY failed");
- 
 -	if (connect(s, (struct sockaddr*) &sin, sizeof(sin)) != 0) {
 -		// We failed to connect for which reason what so ever
 -		return false;
++			if (!SetNoDelay(s))
++				DEBUG(net, 1) ("[NET] Setting TCP_NODELAY failed");
++
 +			if (!connect(s, res->ai_addr, res->ai_addrlen)) {
 +				// we managed to establish a connection
 +				if (!SetNonBlocking(s))
@@ -128,7 +142,96 @@ Index: network.c
  }
  
  // For the server, to accept new clients
-@@ -1309,6 +1354,7 @@
+@@ -794,8 +836,10 @@
+ // Query a server to fetch his game-info
+ //  If game_info is true, only the gameinfo is fetched,
+ //   else only the client_info is fetched
+-NetworkGameList *NetworkQueryServer(const char* host, unsigned short port, bool game_info)
++NetworkGameList *NetworkQueryServer(const char* host, const char* service, bool game_info)
+ {
++#warning fixme, remove port when not needed anymore
++	int port=atoi(service);
+ 	if (!_network_available) return NULL;
+ 
+ 	NetworkDisconnect();
+@@ -809,8 +853,9 @@
+ 	_network_server = false;
+ 
+ 	// Try to connect
+-	_networking = NetworkConnect(host, port);
++	_networking = NetworkConnect(host, service);
+ 
++#warning fixme, do we need the following two lines?
+ //	ttd_strlcpy(_network_last_host, host, sizeof(_network_last_host));
+ //	_network_last_port = port;
+ 
+@@ -834,20 +879,26 @@
+ 		NetworkGameList *item;
+ 		const char *port = NULL;
+ 		const char *player = NULL;
++		const char *service = NULL;
+ 		char host[NETWORK_HOSTNAME_LENGTH];
++#warning remove old port
+ 		uint16 rport;
+ 
+ 		ttd_strlcpy(host, b, lengthof(host));
+ 
+ 		ttd_strlcpy(_network_default_ip, b, lengthof(_network_default_ip));
+ 		rport = NETWORK_DEFAULT_PORT;
++		service = NETWORK_DEFAULT_SERVICE;
+ 
+ 		ParseConnectionString(&player, &port, host);
+ 
+ 		if (player != NULL) _network_playas = atoi(player);
+-		if (port != NULL) rport = atoi(port);
++		if (port != NULL) {
++			rport = atoi(port);
++			service = port;
++		}
+ 
+-		item = NetworkQueryServer(host, rport, true);
++		item = NetworkQueryServer(host, service, true);
+ 		item->manually = true;
+ 	}
+ }
+@@ -861,7 +912,8 @@
+ 	NetworkGameList *item = _network_game_list;
+ 	while (item != NULL && i != lengthof(_network_host_list)) {
+ 		if (item->manually)
+-			_network_host_list[i++] = str_fmt("%s:%i", item->info.hostname, item->port);
++#warning !!! atoi will break for non-numeric services
++			_network_host_list[i++] = str_fmt("%s:%i", item->info.hostname, atoi(item->info.service));
+ 		item = item->next;
+ 	}
+ 
+@@ -871,21 +923,23 @@
+ }
+ 
+ // Used by clients, to connect to a server
+-bool NetworkClientConnectGame(const char* host, unsigned short port)
++bool NetworkClientConnectGame(const char* host, const char* service)
+ {
++#warning fixme, remove old port
++	unsigned short port=atoi(service);
+ 	if (!_network_available) return false;
+ 
+ 	if (port == 0) return false;
+ 
+ 	ttd_strlcpy(_network_last_host, host, sizeof(_network_last_host));
+-	_network_last_port = port;
++	ttd_strlcpy(_network_last_service, service, sizeof(_network_last_service));
+ 
+ 	NetworkDisconnect();
+ 	NetworkUDPClose();
+ 	NetworkInitialize();
+ 
+ 	// Try to connect
+-	_networking = NetworkConnect(host, port);
++	_networking = NetworkConnect(host, service);
+ 
+ 	// We are connected
+ 	if (_networking) {
+@@ -1309,6 +1363,7 @@
  	_network_last_advertise_date = 0;
  	_network_advertise_retries = 0;
  
@@ -136,142 +239,560 @@ Index: network.c
  	/* Load the ip from the openttd.cfg */
  	_network_server_bind_ip = inet_addr(_network_server_bind_ip_host);
  	/* And put the data back in it in case it was an invalid ip */
+Index: ttd.c
+===================================================================
+--- ttd.c	(revision 2235)
++++ ttd.c	(working copy)
+@@ -669,18 +669,24 @@
+ 		if (network_conn != NULL) {
+ 			const char *port = NULL;
+ 			const char *player = NULL;
++			const char *service = NULL;
++#warning fixme, remove old port
+ 			uint16 rport;
+ 
+ 			rport = NETWORK_DEFAULT_PORT;
++			service = NETWORK_DEFAULT_SERVICE;
+ 
+ 			ParseConnectionString(&player, &port, network_conn);
+ 
+ 			if (player != NULL) _network_playas = atoi(player);
+-			if (port != NULL) rport = atoi(port);
++			if (port != NULL) {
++				rport = atoi(port);
++				service = port;
++			}
+ 
+ 			LoadIntroGame();
+ 			_switch_mode = SM_NONE;
+-			NetworkClientConnectGame(network_conn, rport);
++			NetworkClientConnectGame(network_conn, service);
+ 		}
+ 	}
+ #endif /* ENABLE_NETWORK */
+@@ -1148,7 +1154,7 @@
+ 		if (_network_reconnect > 0 && --_network_reconnect == 0) {
+ 			// This means that we want to reconnect to the last host
+ 			// We do this here, because it means that the network is really closed
+-			NetworkClientConnectGame(_network_last_host, _network_last_port);
++			NetworkClientConnectGame(_network_last_host, _network_last_service);
+ 		}
+ 		// Singleplayer
+ 		StateGameLoop();
+Index: network.h
+===================================================================
+--- network.h	(revision 2235)
++++ network.h	(working copy)
+@@ -4,7 +4,7 @@
+ #define NOREV_STRING "norev000"
+ 
+ #ifdef ENABLE_NETWORK
+-
++#include <netdb.h>
+ // If this line is enable, every frame will have a sync test
+ //  this is not needed in normal games. Normal is like 1 sync in 100
+ //  frames. You can enable this if you have a lot of desyncs on a certain
+@@ -33,6 +33,7 @@
+ #define NETWORK_MASTER_SERVER_WELCOME_MESSAGE "OpenTTDRegister"
+ 
+ #define NETWORK_DEFAULT_PORT 3979
++#define NETWORK_DEFAULT_SERVICE "3979"
+ 
+ #define MAX_INTERFACES 9
+ 
+@@ -43,7 +44,18 @@
+ 
+ enum {
+ 	NETWORK_NAME_LENGTH        = 80,
++  #ifdef NI_MAXHOST
++	NETWORK_HOSTNAME_LENGTH    = NI_MAXHOST,
++  #else
++  #warning NI_MAXHOST not defined
+ 	NETWORK_HOSTNAME_LENGTH    = 80,
++  #endif
++  #ifdef NI_MAXSERV
++	NETWORK_SERVICE_LENGTH    = NI_MAXSERV,
++  #else
++  #warning NI_MAXSERV not defined
++	NETWORK_SERVICE_LENGTH    = 80,
++  #endif
+ 	NETWORK_REVISION_LENGTH    = 10,
+ 	NETWORK_PASSWORD_LENGTH    = 20,
+ 	NETWORK_PLAYERS_LENGTH     = 200,
+@@ -57,6 +69,7 @@
+ typedef struct NetworkGameInfo {
+ 	char server_name[NETWORK_NAME_LENGTH];					// Server name
+ 	char hostname[NETWORK_HOSTNAME_LENGTH];					// Hostname of the server (if any)
++	char service[NETWORK_SERVICE_LENGTH];
+ 	char server_revision[NETWORK_REVISION_LENGTH];	// The SVN version number the server is using (e.g.: 'r304')
+ 																									//  It even shows a SVN version in release-version, so
+ 																									//  it is easy to compare if a server is of the correct version
+@@ -104,7 +117,10 @@
+ typedef struct NetworkGameList {
+ 	NetworkGameInfo info;
+ 	uint32 ip;
+-	uint16 port;
++	//	uint16 port;
++	// replace that crappy uint32 for ip/uint16 for port with sockaddr
++	struct sockaddr *sa;
++	socklen_t salen;
+ 	bool online;																		// False if the server did not respond (default status)
+ 	bool manually;																	// True if the server was added manually
+ 	struct NetworkGameList *next;
+@@ -151,11 +167,15 @@
+ VARDEF uint16 _network_lobby_company_count;
+ 
+ VARDEF uint _network_server_port;
++VARDEF char _network_server_service[NETWORK_SERVICE_LENGTH];
+ /* We use bind_ip and bind_ip_host, where bind_ip_host is the readable form of
+     bind_ip_host, and bind_ip the numeric value, because we want a nice number
+     in the openttd.cfg, but we wants to use the uint32 internally.. */
++// that's deprecated
+ VARDEF uint32 _network_server_bind_ip;
+ VARDEF char _network_server_bind_ip_host[NETWORK_HOSTNAME_LENGTH];
++// that's the new variable name
++VARDEF char _network_server_bind_hostname[NETWORK_HOSTNAME_LENGTH];
+ VARDEF bool _is_network_server; // Does this client wants to be a network-server?
+ VARDEF char _network_server_name[NETWORK_NAME_LENGTH];
+ VARDEF char _network_server_password[NETWORK_PASSWORD_LENGTH];
+@@ -179,7 +199,7 @@
+ VARDEF uint16 _network_join_kbytes_total;
+ 
+ VARDEF char _network_last_host[NETWORK_HOSTNAME_LENGTH];
+-VARDEF short _network_last_port;
++VARDEF char _network_last_service[NETWORK_SERVICE_LENGTH];
+ VARDEF uint32 _network_last_host_ip;
+ VARDEF uint8 _network_reconnect;
+ 
+@@ -198,7 +218,7 @@
+ 
+ VARDEF uint16 _network_restart_game_date;    // If this year is reached, the server automaticly restarts
+ 
+-NetworkGameList *NetworkQueryServer(const char* host, unsigned short port, bool game_info);
++NetworkGameList *NetworkQueryServer(const char* host, const char* service, bool game_info);
+ 
+ #endif /* ENABLE_NETWORK */
+ 
 Index: network_udp.c
 ===================================================================
---- network_udp.c	(revision 2215)
+--- network_udp.c	(revision 2235)
 +++ network_udp.c	(working copy)
-@@ -38,7 +38,7 @@
+@@ -38,7 +38,11 @@
  };
  
  #define DEF_UDP_RECEIVE_COMMAND(type) void NetworkPacketReceive_ ## type ## _command(Packet *p, struct sockaddr_in *client_addr)
 -void NetworkSendUDP_Packet(SOCKET udp, Packet *p, struct sockaddr_in *recv);
-+void NetworkSendUDP_Packet(SOCKET udp, Packet *p, struct sockaddr_storage *recv);
++//void NetworkSendUDP_Packet(SOCKET udp, Packet *p, struct sockaddr_in *recv);
++// just like the above, only using the new interface. to provide seemless migration 
++// from old network code to the new. will be renamed to NetworkSendUDP_Packet
++// once the rewrite is complete
++void NetworkSendUDP_Packet(SOCKET udp, Packet *p, struct sockaddr *recv);
  
  NetworkClientState _udp_cs;
  
-@@ -313,7 +313,7 @@
+@@ -74,7 +78,7 @@
+ 	NetworkSend_uint8 (packet, _network_game_info.dedicated);
  
+ 	// Let the client know that we are here
+-	NetworkSendUDP_Packet(_udp_server_socket, packet, client_addr);
++	NetworkSendUDP_Packet(_udp_server_socket, packet, (struct sockaddr *)client_addr);
  
- // Send a packet over UDP
--void NetworkSendUDP_Packet(SOCKET udp, Packet *p, struct sockaddr_in *recv)
-+void NetworkSendUDP_Packet(SOCKET udp, Packet *p, struct sockaddr_storage *recv)
+ 	free(packet);
+ 
+@@ -85,7 +89,7 @@
  {
- 	int res;
+ 	NetworkGameList *item;
+ 	byte game_info_version;
+-
++	struct addrinfo ai;
+ 	// Just a fail-safe.. should never happen
+ 	if (_network_udp_server)
+ 		return;
+@@ -95,6 +99,7 @@
+ 	if (_udp_cs.quited)
+ 		return;
  
-@@ -321,12 +321,12 @@
- 	p->buffer[0] = p->size & 0xFF;
- 	p->buffer[1] = p->size >> 8;
++	//DEBUG(net, 6)("[NET][UDP] Server response from %s:%d", NetworkGetHostName(ai), NetworkGetServNr(ai));
+ 	DEBUG(net, 6)("[NET][UDP] Server response from %s:%d", inet_ntoa(client_addr->sin_addr),ntohs(client_addr->sin_port));
  
--	// Send the buffer
-+	// Send the buffer  
- 	res = sendto(udp, p->buffer, p->size, 0, (struct sockaddr *)recv, sizeof(*recv));
+ 	// Find next item
+@@ -233,7 +238,7 @@
+ 	/* Indicates end of client list */
+ 	NetworkSend_uint8(packet, 0);
  
- 	// Check for any errors, but ignore it for the rest
- 	if (res == -1) {
--		DEBUG(net, 1)("[NET][UDP] Send error: %i", GET_LAST_ERROR());
-+		DEBUG(net, 1)("[NET][UDP] Send error: %i, %s", GET_LAST_ERROR(), strerror(GET_LAST_ERROR()));
- 	}
+-	NetworkSendUDP_Packet(_udp_server_socket, packet, client_addr);
++	NetworkSendUDP_Packet(_udp_server_socket, packet, (struct sockaddr *)client_addr);
+ 
+ 	free(packet);
  }
+@@ -289,11 +294,35 @@
+ 	NULL
+ };
  
-@@ -471,6 +471,8 @@
- // Request the the server-list from the master server
- void NetworkUDPQueryMasterServer(void)
- {
+-
+ // If this fails, check the array above with network_data.h
+ assert_compile(lengthof(_network_udp_packet) == PACKET_UDP_END);
+ 
++int NetworkSendToFirstReachable(Packet *packet, char *host, char *port)
++{
 +	struct addrinfo hints;
 +	struct addrinfo *res;
- 	struct sockaddr_in out_addr;
- 	Packet *p;
- 
-@@ -514,24 +516,53 @@
- 
- NetworkGameList *NetworkUDPQueryServer(const char* host, unsigned short port)
- {
--	struct sockaddr_in out_addr;
-+	SOCKET s;
-+	struct addrinfo hints;
-+	struct addrinfo *out_addr;
 +	int err;
-+
- 	Packet *p;
- 	NetworkGameList *item;
- 	char hostname[NETWORK_HOSTNAME_LENGTH];
--
-+	char port_s[6];
-+	sprintf(port_s, "%d", port); // just an ugly cludge till port is char*
- 	// No UDP-socket yet..
- 	if (_udp_client_socket == INVALID_SOCKET)
- 		if (!NetworkUDPListen(&_udp_client_socket, 0, 0, true))
- 			return NULL;
  
- 	ttd_strlcpy(hostname, host, sizeof(hostname));
++	if (_udp_client_socket == INVALID_SOCKET)
++		if (!NetworkUDPListen(&_udp_client_socket, 0, 0, true))
++			return 0;
++
 +	bzero(&hints, sizeof(hints));
 +	hints.ai_family = AF_INET;
 +	hints.ai_socktype = SOCK_STREAM;
- 
--	out_addr.sin_family = AF_INET;
--	out_addr.sin_port = htons(port);
--	out_addr.sin_addr.s_addr = NetworkResolveHost(host);
-+	err=getaddrinfo(hostname, port_s, &hints, &out_addr);
++	err=getaddrinfo(host, port, &hints, &res);
 +	if (err) {
-+		DEBUG(net, 1) ("[NET] getaddrinfo failed: %s", gai_strerror(err));
-+	} else { 
-+		// we'll try to connect to every ip, and display the first found
-+		while (out_addr) {
-+			hints=*out_addr; // just an ugly kludge
- 
--	// Clear item in gamelist
--	item = NetworkGameListAddItem(inet_addr(inet_ntoa(out_addr.sin_addr)), ntohs(out_addr.sin_port));
-+			// now try to connect, ...
-+			s = socket(out_addr->ai_family, out_addr->ai_socktype, out_addr->ai_protocol);
-+			if (s == -1) {
-+				DEBUG(net, 1) ("[NET] socket creation failed: %s", gai_strerror(errno));
-+				break;
-+			}
-+			if (!connect(s, out_addr->ai_addr, out_addr->ai_addrlen)) {
-+				DEBUG(net, 1) ("[NET] found an address [%s]:%d", NetworkGetHostName(hints), NetworkGetServNr(hints));
-+				// we found a usable address
-+				break;
-+			} else {
-+				DEBUG(net, 1) ("[NET] trying not to use [%s]:%d", NetworkGetHostName(hints), NetworkGetServNr(hints));
-+				out_addr=out_addr->ai_next;
-+			}
++		DEBUG(net, 0) ("[NET] getaddrinfo failed: %s", gai_strerror(err));
++	} else {
++		while (res) {
++			NetworkSendUDP_Packet(_udp_client_socket, packet, (struct sockaddr *)&*res->ai_addr);
++			//DEBUG(net, 2)("[NET][UDP] Queried Master Server at %s:%d", NetworkGetHostName(*res), NetworkGetServNr(*res));
++			res=res->ai_next;
 +		}
 +	}
-+	DEBUG(net, 1) ("[NET] ended up using %s/%d", NetworkGetHostName(hints), NetworkGetServNr(hints));
-+	// add the item, just to have it there...
-+	item = NetworkGameListAddItem(NetworkGetHostName(hints), NetworkGetServNr(hints));
++	return 0;
++}
++
+ void NetworkHandleUDPPacket(Packet *p, struct sockaddr_in *client_addr)
+ {
+ 	byte type;
+@@ -311,7 +340,7 @@
+ 	}
+ }
+ 
+-
++/*
+ // Send a packet over UDP
+ void NetworkSendUDP_Packet(SOCKET udp, Packet *p, struct sockaddr_in *recv)
+ {
+@@ -329,7 +358,25 @@
+ 		DEBUG(net, 1)("[NET][UDP] Send error: %i", GET_LAST_ERROR());
+ 	}
+ }
++*/
+ 
++void NetworkSendUDP_Packet(SOCKET udp, Packet *p, struct sockaddr *recv)
++{
++	int res;
++
++	// Put the length in the buffer
++	p->buffer[0] = p->size & 0xFF;
++	p->buffer[1] = p->size >> 8;
++
++	// Send the buffer
++	res = sendto(udp, p->buffer, p->size, 0, (struct sockaddr *)recv, sizeof(*recv));
++
++	// Check for any errors, but ignore it for the rest
++	if (res == -1) {
++		DEBUG(net, 1)("[NET][UDP] Send error: %i", GET_LAST_ERROR());
++	}
++}
++
+ // Start UDP listener
+ bool NetworkUDPListen(SOCKET *udp, uint32 host, uint16 port, bool broadcast)
+ {
+@@ -461,7 +508,7 @@
+ 		out_addr.sin_port = htons(_network_server_port);
+ 		out_addr.sin_addr.s_addr = bcaddr;
+ 
+-		NetworkSendUDP_Packet(udp, p, &out_addr);
++		NetworkSendUDP_Packet(udp, p, (struct sockaddr *)&out_addr);
+ 
+ 		i++;
+ 	}
+@@ -471,26 +518,14 @@
+ // Request the the server-list from the master server
+ void NetworkUDPQueryMasterServer(void)
+ {
+-	struct sockaddr_in out_addr;
+ 	Packet *p;
+ 
+-	if (_udp_client_socket == INVALID_SOCKET)
+-		if (!NetworkUDPListen(&_udp_client_socket, 0, 0, true))
+-			return;
+-
+ 	p = NetworkSend_Init(PACKET_UDP_CLIENT_GET_LIST);
+-
+-	out_addr.sin_family = AF_INET;
+-	out_addr.sin_port = htons(NETWORK_MASTER_SERVER_PORT);
+-	out_addr.sin_addr.s_addr = NetworkResolveHost(NETWORK_MASTER_SERVER_HOST);
+-
+ 	// packet only contains protocol version
+ 	NetworkSend_uint8(p, NETWORK_MASTER_SERVER_VERSION);
+ 
+-	NetworkSendUDP_Packet(_udp_client_socket, p, &out_addr);
++	NetworkSendToFirstReachable(p, (char *)NETWORK_MASTER_SERVER_HOST, (char *)"3978");
+ 
+-	DEBUG(net, 2)("[NET][UDP] Queried Master Server at %s:%d", inet_ntoa(out_addr.sin_addr),ntohs(out_addr.sin_port));
+-
+ 	free(p);
+ }
+ 
+@@ -518,6 +553,8 @@
+ 	Packet *p;
+ 	NetworkGameList *item;
+ 	char hostname[NETWORK_HOSTNAME_LENGTH];
++	char port_s[6];
++	sprintf(port_s, "%d", port);
+ 
+ 	// No UDP-socket yet..
+ 	if (_udp_client_socket == INVALID_SOCKET)
+@@ -531,7 +568,9 @@
+ 	out_addr.sin_addr.s_addr = NetworkResolveHost(host);
+ 
+ 	// Clear item in gamelist
+-	item = NetworkGameListAddItem(inet_addr(inet_ntoa(out_addr.sin_addr)), ntohs(out_addr.sin_port));
++#warning !!!! fixme, change to use correct port
++	//	item = NetworkGameListAddItem(inet_addr(inet_ntoa(out_addr.sin_addr)), ntohs(out_addr.sin_port));
++	item = NetworkGameListAddItem(inet_addr(inet_ntoa(out_addr.sin_addr)), "3987");
  	memset(&item->info, 0, sizeof(item->info));
  	snprintf(item->info.server_name, sizeof(item->info.server_name), "%s", hostname);
  	snprintf(item->info.hostname, sizeof(item->info.hostname), "%s", hostname);
-@@ -540,7 +571,7 @@
+@@ -540,7 +579,8 @@
  	// Init the packet
  	p = NetworkSend_Init(PACKET_UDP_CLIENT_FIND_SERVER);
  
 -	NetworkSendUDP_Packet(_udp_client_socket, p, &out_addr);
-+	NetworkSendUDP_Packet(_udp_client_socket, p, (struct sockaddr*)&hints.ai_addr);
++	NetworkSendToFirstReachable(p, hostname, (char *)port_s);
++	NetworkSendUDP_Packet(_udp_client_socket, p, (struct sockaddr *)&out_addr);
  
  	free(p);
  
-@@ -622,7 +653,7 @@
+@@ -551,7 +591,9 @@
+ /* Remove our advertise from the master-server */
+ void NetworkUDPRemoveAdvertise(void)
+ {
+-	struct sockaddr_in out_addr;
++  struct addrinfo *res;
++	struct addrinfo hints;
++	int err;
+ 	Packet *p;
+ 
+ 	/* Check if we are advertising */
+@@ -565,19 +607,24 @@
+ 
+ 	DEBUG(net, 2)("[NET][UDP] Removing advertise..");
+ 
+-	/* Find somewhere to send */
+-	out_addr.sin_family = AF_INET;
+-	out_addr.sin_port = htons(NETWORK_MASTER_SERVER_PORT);
+-	out_addr.sin_addr.s_addr = NetworkResolveHost(NETWORK_MASTER_SERVER_HOST);
++	bzero(&hints, sizeof(hints));
++	hints.ai_family = AF_INET;
++	hints.ai_socktype = SOCK_STREAM;
++	err=getaddrinfo((char *)NETWORK_MASTER_SERVER_HOST, "3978", &hints, &res);
++	if (err) {
++		DEBUG(net, 0) ("[NET] getaddrinfo failed: %s", gai_strerror(err));
++	} else {
++		while (res) {
++			p = NetworkSend_Init(PACKET_UDP_SERVER_UNREGISTER);
++			/* Packet is: Version, server_port */
++			NetworkSend_uint8(p, NETWORK_MASTER_SERVER_VERSION);
++			NetworkSend_uint16(p, _network_server_port);
++			NetworkSendUDP_Packet(_udp_client_socket, p, (struct sockaddr *)&*res->ai_addr);
+ 
+-	/* Send the packet */
+-	p = NetworkSend_Init(PACKET_UDP_SERVER_UNREGISTER);
+-	/* Packet is: Version, server_port */
+-	NetworkSend_uint8(p, NETWORK_MASTER_SERVER_VERSION);
+-	NetworkSend_uint16(p, _network_server_port);
+-	NetworkSendUDP_Packet(_udp_master_socket, p, &out_addr);
+-
+-	free(p);
++			res=res->ai_next;
++			free(p);
++		}
++	}
+ }
+ 
+ /* Register us to the master server
+@@ -622,7 +669,7 @@
  	NetworkSend_string(p, NETWORK_MASTER_SERVER_WELCOME_MESSAGE);
  	NetworkSend_uint8(p, NETWORK_MASTER_SERVER_VERSION);
  	NetworkSend_uint16(p, _network_server_port);
 -	NetworkSendUDP_Packet(_udp_master_socket, p, &out_addr);
-+	NetworkSendUDP_Packet(_udp_master_socket, p, (struct sockaddr*)&out_addr);
++	NetworkSendUDP_Packet(_udp_master_socket, p, (struct sockaddr *)&out_addr);
  
  	free(p);
  }
 Index: network_data.h
 ===================================================================
---- network_data.h	(revision 2215)
+--- network_data.h	(revision 2235)
 +++ network_data.h	(working copy)
-@@ -226,7 +226,8 @@
+@@ -226,7 +226,9 @@
  NetworkClientInfo *NetworkFindClientInfoFromIndex(uint16 client_index);
  NetworkClientState *NetworkFindClientStateFromIndex(uint16 client_index);
  unsigned long NetworkResolveHost(const char *hostname);
 -
 +int NetworkGetServNr(struct addrinfo res);
 +char *NetworkGetHostName(struct addrinfo res);
++int NetworkSendToFirstReachable(Packet *packet, char *host, char *port);
  #endif /* ENABLE_NETWORK */
  
  #endif // NETWORK_DATA_H
+Index: settings.c
+===================================================================
+--- settings.c	(revision 2235)
++++ settings.c	(working copy)
+@@ -764,6 +764,8 @@
+ 	{"max_join_time",		SDT_UINT16,	(void*)500,	&_network_max_join_time,	NULL},
+ 	{"pause_on_join",		SDT_BOOL, (void*)false, &_network_pause_on_join, NULL},
+ 	{"server_bind_ip",	SDT_STRINGBUF | (lengthof(_network_server_bind_ip_host) << 16),	"0.0.0.0",	&_network_server_bind_ip_host,	NULL},
++	{"server_bind_hostname", SDT_STRINGBUF | (lengthof(_network_server_bind_hostname) << 16), NULL, &_network_server_bind_hostname, NULL},
++	{"server_service", SDT_STRINGBUF | (lengthof(_network_server_service) << 16), NETWORK_DEFAULT_SERVICE, &_network_server_service, NULL},
+ 	{"server_port",			SDT_UINT,	(void*)NETWORK_DEFAULT_PORT,	&_network_server_port,	NULL},
+ 	{"server_advertise",SDT_BOOL, (void*)false, &_network_advertise, NULL},
+ 	{"lan_internet",		SDT_UINT8, (void*)0, &_network_lan_internet, NULL},
+Index: network_gui.c
+===================================================================
+--- network_gui.c	(revision 2235)
++++ network_gui.c	(working copy)
+@@ -220,7 +220,9 @@
+ 			y+=10;
+ 
+ 			SetDParam(0, _str_server_address);
+-			SetDParam(1, _selected_item->port);
++#warning change to service
++			//			SetDParam(1, _selected_item->port);
++			SetDParam(1, _selected_item->info.service);
+ 			DrawString(260, y, STR_NETWORK_SERVER_ADDRESS, 2); // server address
+ 			y+=10;
+ 
+@@ -326,13 +328,16 @@
+ 			if (_selected_item != NULL) {
+ 				memcpy(&_network_game_info, &_selected_item->info, sizeof(NetworkGameInfo));
+ 				snprintf(_network_last_host, sizeof(_network_last_host), "%s", inet_ntoa(*(struct in_addr *)&_selected_item->ip));
+-				_network_last_port = _selected_item->port;
++				//_network_last_port = _selected_item->port;
++				ttd_strlcpy(_network_last_service, _selected_item->info.service, sizeof(_network_last_service));
++#warning fixme, make sure that selected_item->info.service contains something valid
+ 				ShowNetworkLobbyWindow();
+ 			}
+ 			break;
+ 		case 18: // Refresh
+ 			if (_selected_item != NULL) {
+-				NetworkQueryServer(_selected_item->info.hostname, _selected_item->port, true);
++#warning fixme, make sure that selected_item->info.service contains something valid
++				NetworkQueryServer(_selected_item->info.hostname, _selected_item->info.service, true);
+ 			}
+ 			break;
+ 
+@@ -824,19 +829,20 @@
+ 		case 7: /* Join company */
+ 			if (_selected_company_item != -1) {
+ 				_network_playas = _selected_company_item + 1;
+-				NetworkClientConnectGame(_network_last_host, _network_last_port);
++				NetworkClientConnectGame(_network_last_host, _network_last_service);
+ 			}
+ 			break;
+ 		case 8: /* New company */
+ 			_network_playas = 0;
+-			NetworkClientConnectGame(_network_last_host, _network_last_port);
++			NetworkClientConnectGame(_network_last_host, _network_last_service);
+ 			break;
+ 		case 9: /* Spectate game */
+ 			_network_playas = OWNER_SPECTATOR;
+-			NetworkClientConnectGame(_network_last_host, _network_last_port);
++			NetworkClientConnectGame(_network_last_host, _network_last_service);
+ 			break;
+ 		case 10: /* Refresh */
+-			NetworkQueryServer(_network_last_host, _network_last_port, false);
++      #warning fixme
++			//NetworkQueryServer(_network_last_host, _network_last_service, false);
+ 			break;
+ 		}	break;
+ 
+@@ -883,9 +889,8 @@
+ 	DeleteWindowById(WC_NETWORK_WINDOW, 0);
+ 
+ 	_network_lobby_company_count = 0;
++	NetworkQueryServer(_network_last_host, _network_last_service, false);
+ 
+-	NetworkQueryServer(_network_last_host, _network_last_port, false);
+-
+ 	w = AllocateWindowDesc(&_network_lobby_window_desc);
+ 	strcpy(_edit_str_buf, "");
+ 	w->vscroll.pos = 0;
+Index: console_cmds.c
+===================================================================
+--- console_cmds.c	(revision 2235)
++++ console_cmds.c	(working copy)
+@@ -560,9 +560,11 @@
+ 
+ DEF_CONSOLE_CMD(ConNetworkConnect)
+ {
++#warning fixme, remove old port
+ 	char* ip;
+ 	const char *port = NULL;
+ 	const char *player = NULL;
++	const char *service = NULL;
+ 	uint16 rport;
+ 
+ 	if (argc<2) return NULL;
+@@ -574,6 +576,7 @@
+ 
+ 	ip = argv[1];
+ 	rport = NETWORK_DEFAULT_PORT;
++	service = NETWORK_DEFAULT_SERVICE;
+ 
+ 	ParseConnectionString(&player, &port, ip);
+ 
+@@ -584,10 +587,11 @@
+ 	}
+ 	if (port != NULL) {
+ 		rport = atoi(port);
++		service = port;
+ 		IConsolePrintF(_iconsole_color_default, "    port: %s", port);
+ 	}
+ 
+-	NetworkClientConnectGame(ip, rport);
++	NetworkClientConnectGame(ip, service);
+ 
+ 	return NULL;
+ }
+Index: network_gamelist.c
+===================================================================
+--- network_gamelist.c	(revision 2235)
++++ network_gamelist.c	(working copy)
+@@ -11,19 +11,22 @@
+ extern void UpdateNetworkGameWindow(bool unselect);
+ 
+ 
+-NetworkGameList *NetworkGameListAddItem(uint32 ip, uint16 port)
++NetworkGameList *NetworkGameListAddItem(uint32 ip, const char* service)
+ {
++#warning !!! will fail horribly with correct port...
++	//uint16 port;
+ 	NetworkGameList *item;
++	service="3987";
+ 
+ 	item = _network_game_list;
+ 	if (item != NULL) {
+ 		while (item->next != NULL) {
+-			if (item->ip == ip && item->port == port)
++			if (item->ip == ip && item->info.service == service)
+ 				return item;
+ 			item = item->next;
+ 		}
+-
+-		if (item->ip == ip && item->port == port)
++#warning fixme, should be strncmp
++		if (item->ip == ip && item->info.service == service)
+ 			return item;
+ 
+ 		item->next = malloc(sizeof(*item));
+@@ -39,7 +42,7 @@
+ 
+ 	item->next = NULL;
+ 	item->ip = ip;
+-	item->port = port;
++	ttd_strlcpy(item->info.service, service, 120);
+ 	_network_game_count++;
+ 
+ 	UpdateNetworkGameWindow(false);
