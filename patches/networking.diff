@@ -79,7 +79,7 @@ Index: network.c
  
 -	if (!SetNoDelay(s))
 -		DEBUG(net, 1)("[NET] Setting TCP_NODELAY failed");
-+	bzero(&hints, sizeof(hints));
++	memset(&hints, 0, sizeof(hints));
 +	hints.ai_family = AF_INET;
 +	hints.ai_socktype = SOCK_STREAM;
  
@@ -443,7 +443,7 @@ Index: network_udp.c
 +		if (!NetworkUDPListen(&_udp_client_socket, 0, 0, true))
 +			return 0;
 +
-+	bzero(&hints, sizeof(hints));
++	memset(&hints, 0, sizeof(hints));
 +	hints.ai_family = AF_INET;
 +	hints.ai_socktype = SOCK_STREAM;
 +	err=getaddrinfo(host, port, &hints, &res);
@@ -583,7 +583,7 @@ Index: network_udp.c
 -	out_addr.sin_family = AF_INET;
 -	out_addr.sin_port = htons(NETWORK_MASTER_SERVER_PORT);
 -	out_addr.sin_addr.s_addr = NetworkResolveHost(NETWORK_MASTER_SERVER_HOST);
-+	bzero(&hints, sizeof(hints));
++	memset(&hints, 0, sizeof(hints));
 +	hints.ai_family = AF_INET;
 +	hints.ai_socktype = SOCK_STREAM;
 +	err=getaddrinfo((char *)NETWORK_MASTER_SERVER_HOST, "3978", &hints, &res);
